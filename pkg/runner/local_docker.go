@@ -70,7 +70,8 @@ type LocalDockerRunnerConfig struct {
 	// (default: ["nofile=1048576:1048576"]).
 	Ulimits []string `toml:"ulimits"`
 
-	ExposedPorts ExposedPorts `toml:"exposed_ports"`
+	ExposedPorts    ExposedPorts `toml:"exposed_ports"`
+	AdditionalHosts []string     `toml:"additional_hosts"`
 	// Collection timeout is the time we wait for the sync service to send us the test outcomes after
 	// all instances have finished.
 	OutcomesCollectionTimeout time.Duration `toml:"outcomes_collection_timeout"`
@@ -136,6 +137,16 @@ func (r *LocalDockerRunner) Healthcheck(ctx context.Context, engine api.Engine, 
 		ow.Warnf("guessing docker socket as %s", dockerSock)
 	}
 
+	additionalHosts := "ADDITIONAL_HOSTS="
+	envHosts, hasHosts := engine.EnvConfig().Runners["local:docker"]["additional_hosts"].([]interface{})
+	if hasHosts {
+		for i, host := range envHosts {
+			if i > 0 {
+				additionalHosts += ","
+			}
+			additionalHosts += host.(string)
+		}
+	}
 	sidecarContainerOpts := docker.EnsureContainerOpts{
 		ContainerName: "testground-sidecar",
 		ContainerConfig: &container.Config{
@@ -143,7 +154,7 @@ func (r *LocalDockerRunner) Healthcheck(ctx context.Context, engine api.Engine, 
 			Entrypoint: []string{"testground"},
 			Cmd:        []string{"sidecar", "--runner", "docker"},
 			// NOTE: we export REDIS_HOST for compatibility with older sdk versions.
-			Env: []string{"SYNC_SERVICE_HOST=testground-sync-service", "REDIS_HOST=testground-redis", "INFLUXDB_HOST=testground-influxdb", "GODEBUG=gctrace=1"},
+			Env: []string{"SYNC_SERVICE_HOST=testground-sync-service", "REDIS_HOST=testground-redis", "INFLUXDB_HOST=testground-influxdb", "GODEBUG=gctrace=1", additionalHosts},
 		},
 		HostConfig: &container.HostConfig{
 			PublishAllPorts: true,
@@ -345,6 +356,9 @@ func (r *LocalDockerRunner) Run(ctx context.Context, input *api.RunInput, ow *rp
 	sharedEnv := make([]string, 0, 3)
 	sharedEnv = append(sharedEnv, "INFLUXDB_URL=http://testground-influxdb:8086")
 	sharedEnv = append(sharedEnv, "REDIS_HOST=testground-redis")
+	logging.S().Infow("additional hosts", "hosts", strings.Join(cfg.AdditionalHosts, ","))
+	sharedEnv = append(sharedEnv, fmt.Sprintf("ADDITIONAL_HOSTS=%s", strings.Join(cfg.AdditionalHosts, ",")))
+
 	// Inject exposed ports.
 	sharedEnv = append(sharedEnv, conv.ToOptionsSlice(cfg.ExposedPorts.ToEnvVars())...)
 	// Set the log level if provided in cfg.
@@ -731,7 +745,7 @@ func attachContainerToNetwork(ctx context.Context, cli *client.Client, container
 	return cli.NetworkConnect(ctx, networkID, containerID, nil)
 }
 
-//nolint this function is unused, but it may come in handy.
+// nolint this function is unused, but it may come in handy.
 func detachContainerFromNetwork(ctx context.Context, cli *client.Client, containerID string, networkID string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
